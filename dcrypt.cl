@@ -74,6 +74,9 @@ for(int i = 0; i < 32; i ++)\
 	A[i*2+1] = ((uchar*)&H)[i] & 0x0f;\
 }
 
+/*
+
+// TODO: pre-calculate internal hashes for dcrypt function as they are dont fot the cpu miner in dcrypt.c
 
 __kernel void init_internal_hashes(__global uint8* ctx,__global uchar * temp_arrays)                                   
 {  
@@ -98,6 +101,7 @@ __kernel void init_internal_hashes(__global uint8* ctx,__global uchar * temp_arr
 	return;
 }
 
+*/
 
 
 
