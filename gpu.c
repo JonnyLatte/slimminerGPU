@@ -177,6 +177,25 @@ int initOpenCL(int prefered_platform, int prefered_device, int work_size)
 
 	g_device = deviceIds[prefered_device];
 
+	size_t length;
+	cl_ulong maxMem;
+
+	clGetPlatformInfo(platforms[prefered_platform], CL_PLATFORM_NAME, 0, NULL, &length);
+	char* sInfo = malloc(length);
+ 	clGetPlatformInfo(platforms[prefered_platform], CL_PLATFORM_NAME, length, sInfo, NULL);
+	applog(LOG_INFO, "Platform: %s", sInfo);
+	free(sInfo);
+
+	clGetDeviceInfo(g_device, CL_DEVICE_NAME, 0, NULL, &length);
+	// Get actual device name
+	sInfo = malloc(length);
+ 	clGetDeviceInfo(g_device, CL_DEVICE_NAME, length, sInfo, NULL);
+	applog(LOG_INFO, "Device: %s", sInfo);
+
+	clGetDeviceInfo(g_device, CL_DEVICE_GLOBAL_MEM_SIZE, sizeof(cl_ulong), &maxMem, NULL);
+	applog(LOG_INFO, "Total device memory: %d MB\n", maxMem >> 20);
+	free(sInfo);
+
 	free(platforms);
 	free(deviceIds);
 
