@@ -209,7 +209,7 @@ Options:\n\
       --hashtable=N     pre-calculate dcrypt internal hashes N deep\n\
       --platform=N      index of the OpenCL platform to use\n\
       --device=N        index of the OpenCL device to use\n\
-      --worksize        number of valuses to send to the GPU at a time\n\
+      --worksize        number of values to send to the GPU at a time\n\
       --cputhreads      number of threads that will remain CPU workers\n\
   -D, --debug           enable debug output\n\
   -P, --protocol-dump   verbose dump of protocol-level activities\n"
@@ -728,7 +728,7 @@ static void *miner_thread(void *userdata)
   uint32_t max_nonce;
   uint32_t end_nonce = 0xffffffffU / opt_n_threads * (thr_id + 1) - 0x20;
   u8int *scratchbuf = NULL, *dcryptDigest = NULL;
-  char s[16];
+  char s[16],s2[16];
   int i;
 
   /* Set worker threads to nice 19 and then preferentially to SCHED_IDLE
@@ -845,8 +845,6 @@ static void *miner_thread(void *userdata)
 	  }
       else
 	  {    
-			
-
       		rc = scanhash_dcrypt(thr_id, work.data, dcryptDigest, work.target, max_nonce, &hashes_done, num_iter,&hashes_skipped);
 	  }
 	  
@@ -875,14 +873,14 @@ static void *miner_thread(void *userdata)
 
 	double time_elapsed = (diff.tv_sec + 1e-6 * diff.tv_usec);
 
-	if(time_elapsed > 1 && thr_id == opt_n_threads - 1) 
+	if(!thr_id && time_elapsed > 1) 
 	{
       gettimeofday(&tv_start, NULL);
 
 	  double hashrate = 0.;
-	  double total_hashrate;
+	  double total_hashrate,gpu_hashrate;
 	  double time_elapsed = (diff.tv_sec + 1e-6 * diff.tv_usec);
-	  unsigned long total_hashes = 0;
+	  unsigned long total_hashes = 0, gpu_hashes = 0;
 	
 
 	  pthread_mutex_lock(&stats_lock);
@@ -893,9 +891,11 @@ static void *miner_thread(void *userdata)
 		
 		thr_hashrates[i] = ((thr_hashes_done[i] + thr_hashes_skipped[i]) / time_elapsed + thr_hashrates[i]); 
 
+		if(opt_gpu && i >= opt_cpu_threads) gpu_hashes += thr_hashes_done[i];
+
 		if(!opt_quiet) 
 		{
-		  char * str = (i >= opt_cpu_threads)? "gpu" : "cpu";
+		  char * str = (i >= opt_cpu_threads && opt_gpu)? "gpu" : "cpu";
 		  sprintf(s, thr_effective_hashrates[i] >= 1e6 ? "%s %.0f" : "%s %.2f",str, 1e-3 * thr_effective_hashrates[i]);
 		  applog(LOG_INFO, "thread %d: %lu hashes %lu skipped, %s khash/s", i, thr_hashes_done[i],thr_hashes_skipped[i], s);
 		}
@@ -908,12 +908,13 @@ static void *miner_thread(void *userdata)
 
 	  pthread_mutex_unlock(&stats_lock);
 
-	  total_hashrate = total_hashes / time_elapsed;
+
 
 	  if(opt_hashrate || !opt_quiet)
 	  {
-	  	sprintf(s, total_hashrate >= 1e6 ? "%.0f" : "%.2f", 1e-3 * total_hashrate);
-	  	applog(LOG_INFO, "Accepted: %lu/%lu, Total Hashrate: %s khash/s ",accepted_count,accepted_count + rejected_count, s);
+		total_hashrate = total_hashes / time_elapsed;
+		gpu_hashrate   = gpu_hashes / time_elapsed;
+	  	applog(LOG_INFO, "shares: %lu/%lu, GPU %.2f khash/s CPU %.2f khash/s total %.2f khash/s",accepted_count,accepted_count + rejected_count, 1e-3 * gpu_hashrate,1e-3 * total_hashrate - 1e-3 * gpu_hashrate, 1e-3 * total_hashrate);
 	  }
 	}
 
