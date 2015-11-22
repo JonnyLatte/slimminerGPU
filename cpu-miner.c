@@ -39,6 +39,8 @@
 #include "miner.h"
 #include "dcrypt.h"
 
+#include "gpu.h"
+
 #define PROGRAM_NAME		"minerd"
 #define LP_SCANTIME		60
 
@@ -130,7 +132,7 @@ extern unsigned int max_hashtable;
 static int opt_retries = -1;
 static int opt_fail_pause = 30;
 int opt_timeout = 270;
-static int opt_scantime = 5;
+static int opt_scantime = 15;
 static json_t *opt_config;
 static const bool opt_time = true;
 static enum sha256_algos opt_algo = ALGO_DCRYPT;
@@ -159,6 +161,16 @@ static double *thr_effective_hashrates;
 static unsigned long * thr_hashes_done;
 static unsigned long * thr_hashes_skipped;
 
+GPU_WORKER * thr_gpu;
+
+static bool opt_gpu = false;
+int opt_platform = 0;
+int opt_device = 0;
+
+int opt_cpu_threads = 0;
+
+uint32_t opt_work_size = 50000;
+
 #ifdef HAVE_GETOPT_LONG
 #include <getopt.h>
 #else
@@ -177,7 +189,6 @@ Options:\n\
                           dcrypt    Dcrypt (default)\n\
                           scrypt    scrypt(1024, 1, 1)\n\
                           sha256d   SHA-256d\n\
-  -i, --iter=NUM	specify number of iterations for Dcrypt (default = 128)\n\
   -o, --url=URL         URL of mining server\n\
   -O, --userpass=U:P    username:password pair for mining server\n\
   -u, --user=USERNAME   username for mining server\n\
@@ -196,6 +207,10 @@ Options:\n\
   -q, --quiet           disable per-thread hashmeter output\n\
   -H, --hashrate        enable total hashmeter output when --quiet chosen\n\
       --hashtable=N     pre-calculate dcrypt internal hashes N deep\n\
+      --platform=N      index of the OpenCL platform to use\n\
+      --device=N        index of the OpenCL device to use\n\
+      --worksize        number of valuses to send to the GPU at a time\n\
+      --cputhreads      number of threads that will remain CPU workers\n\
   -D, --debug           enable debug output\n\
   -P, --protocol-dump   verbose dump of protocol-level activities\n"
 #ifdef HAVE_SYSLOG_H
@@ -240,6 +255,11 @@ static struct option const options[] = {
   { "quiet", 0, NULL, 'q' },
   { "hashrate", 0, NULL, 'H' },
   { "hashtable", 1, NULL, 1008 },
+  { "gpu", 0, NULL, 1009 },
+  { "platform", 1, NULL, 1010 },
+  { "device", 1, NULL, 1011 },
+  { "worksize", 1, NULL, 1012 },
+  { "cputhreads", 1, NULL, 1013 },
   { "retries", 1, NULL, 'r' },
   { "retry-pause", 1, NULL, 'R' },
   { "scantime", 1, NULL, 's' },
@@ -730,8 +750,6 @@ static void *miner_thread(void *userdata)
 	
   if(opt_algo == ALGO_SCRYPT)
     scratchbuf = scrypt_buffer_alloc();
-  else if(opt_algo == ALGO_DCRYPT)
-    dcryptDigest = dcrypt_buffer_alloc();
 
   struct timeval tv_start, tv_end, diff;
   gettimeofday(&tv_start, NULL);
@@ -816,12 +834,22 @@ static void *miner_thread(void *userdata)
 
     case ALGO_DCRYPT:
 
-      //take that work, and swap endians of everything but the nonce since the nonce is set with the correct
-      // endianess above, this is done as dcrypt does not swap internally
-      for(i = 0; i < 19; i++)
-        work.data[i] = swab32(work.data[i]);
+		//take that work, and swap endians of everything but the nonce since the nonce is set with the correct
+		// endianess above, this is done as dcrypt does not swap internally
+	  for(i = 0; i < 19; i++)
+			work.data[i] = swab32(work.data[i]);
 
-      rc = scanhash_dcrypt(thr_id, work.data, dcryptDigest, work.target, max_nonce, &hashes_done, num_iter,&hashes_skipped);
+	  if(opt_gpu && thr_id >= opt_cpu_threads)
+	  {
+			rc = scanhash_dcrypt_gpu(&thr_gpu[thr_id],thr_id, work.data, dcryptDigest, work.target, max_nonce, &hashes_done, num_iter,&hashes_skipped);
+	  }
+      else
+	  {    
+			
+
+      		rc = scanhash_dcrypt(thr_id, work.data, dcryptDigest, work.target, max_nonce, &hashes_done, num_iter,&hashes_skipped);
+	  }
+	  
 	  
       if(have_stratum)
       {
@@ -847,7 +875,7 @@ static void *miner_thread(void *userdata)
 
 	double time_elapsed = (diff.tv_sec + 1e-6 * diff.tv_usec);
 
-	if(time_elapsed > 2 && thr_id == opt_n_threads - 1) 
+	if(time_elapsed > 1 && thr_id == opt_n_threads - 1) 
 	{
       gettimeofday(&tv_start, NULL);
 
@@ -862,13 +890,14 @@ static void *miner_thread(void *userdata)
 	  {
  		total_hashes += thr_hashes_done[i];
 		thr_effective_hashrates[i] = thr_hashes_done[i] / time_elapsed;		
-		// weighted average for the hashrate so that hashrate does not fluctuate wildly resulting in more stable work flow:
-		thr_hashrates[i] = ((thr_hashes_done[i] + thr_hashes_skipped[i]) / time_elapsed + thr_hashrates[i]*9)/10; 
+		
+		thr_hashrates[i] = ((thr_hashes_done[i] + thr_hashes_skipped[i]) / time_elapsed + thr_hashrates[i]); 
 
 		if(!opt_quiet) 
 		{
-		  sprintf(s, thr_effective_hashrates[i] >= 1e6 ? "%.0f" : "%.2f", 1e-3 * thr_effective_hashrates[i]);
-		  applog(LOG_INFO, "thread %d: %lu hashes, %s khash/s", i, thr_hashes_done[i], s);
+		  char * str = (i >= opt_cpu_threads)? "gpu" : "cpu";
+		  sprintf(s, thr_effective_hashrates[i] >= 1e6 ? "%s %.0f" : "%s %.2f",str, 1e-3 * thr_effective_hashrates[i]);
+		  applog(LOG_INFO, "thread %d: %lu hashes %lu skipped, %s khash/s", i, thr_hashes_done[i],thr_hashes_skipped[i], s);
 		}
 
 		thr_hashes_done[i] = 0;
@@ -1154,6 +1183,21 @@ static void parse_arg (int key, char *arg)
 	printf("Using Dcrypt hashtable. Depth: %i\n", opt_hashtable);
 	init_dcrypt_hashtables(opt_hashtable);
     break;
+  case 1009:
+	opt_gpu = true;
+	break;
+  case 1010:
+	opt_platform = atoi(arg);
+	break;
+  case 1011:
+	opt_device = atoi(arg);
+	break;
+  case 1012:
+	opt_work_size = atoi(arg);
+	break;
+  case 1013:
+	opt_cpu_threads = atoi(arg);
+	break;
   case 'D':
     opt_debug = true;
     break;
@@ -1374,6 +1418,19 @@ static void signal_handler(int sig)
 
 int main(int argc, char *argv[])
 {
+	
+	/*// test dcrypt
+	char * str = "The quick brown fox jumps over the lazy dog";
+
+	u32int ret[8];
+	char string[65];
+	dcrypt(str,strlen(str), 0, ret);
+	digest_to_string((u8int*)ret, string);
+	printf(" %s\n#a74369ea2f6434aa55e38820d35300ba6130d82e0121ef64de6218c9198a377d\n", string);
+
+	return 0;/**/
+
+
   struct thr_info *thr;
   long flags;
   int i;
@@ -1383,6 +1440,26 @@ int main(int argc, char *argv[])
 
   /* parse command line */
   parse_cmdline(argc, argv);
+
+  if(opt_gpu)
+  {
+	if(initOpenCL(opt_platform, opt_device, opt_work_size))
+	{
+		return 1;
+	}
+
+	thr_gpu = (unsigned long*)calloc(opt_n_threads, sizeof(GPU_WORKER));
+	if (!thr_gpu) return 1;
+
+	for(int i = 0; i < opt_n_threads; i++)
+	{
+		if(initGPU_WORKER(&thr_gpu[i]))
+		{
+			return NULL;
+		}
+		//applog(LOG_INFO, "GPU thread %d ok", i);
+	}
+  }
 
   if (!opt_benchmark && !rpc_url)
   {
@@ -1462,6 +1539,8 @@ int main(int argc, char *argv[])
   thr_hashrates = (double *) calloc(opt_n_threads, sizeof(double));
   if (!thr_hashrates)
     return 1;
+
+  for(i = 0; i < opt_n_threads; i++) thr_hashrates[i] = 300*144;
 
   thr_effective_hashrates = (double *) calloc(opt_n_threads, sizeof(double));
   if (!thr_effective_hashrates)

@@ -223,22 +223,6 @@ void init_dcrypt_hashtables(unsigned int depth)
 	init_hashtable_values();
 }
 
-typedef struct
-{
-  uint8_t *array;
-  unsigned long long actual_array_sz;
-  uint32_t times_realloced;
-
-} Extend_Array;
-
-inline void Extend_Array_init(Extend_Array *ExtArray)
-{
-  //initial values
-  ExtArray->array = 0;
-  ExtArray->actual_array_sz = 0;
-  ExtArray->times_realloced = 0;
-  return;
-}
 
 uint32_t hex_char_to_int(uint8_t c)
 {
@@ -254,136 +238,7 @@ uint32_t hex_char_to_int(uint8_t c)
   return 0;
 }
 
-inline void join_to_array(uint8_t *array, uint8_t join)
-{
-  *(array + SHA256_LEN) = join;
-  return;
-}
-
-void extend_array(Extend_Array *extend_array, unsigned long long used_array_sz, 
-                  uint8_t *extend, uint32_t extend_sz, uint8_t hashed_end, int max_iter)
-{
-  if(!extend_array)
-    return;
-
-  //if there is not enough room
-  if((extend_array->actual_array_sz - used_array_sz) < (extend_sz + hashed_end))
-  {
-    //if extend_array->array has already been malloc'd
-    if(extend_array->times_realloced)
-    {
-      //reallocate on an exponential curve, modern computers have plenty ram
-      extend_array->actual_array_sz += (2 << extend_array->times_realloced++) * (max_iter * 64 + SHA256_DIGEST_LENGTH);
-      extend_array->array = realloc(extend_array->array, extend_array->actual_array_sz);
-    }else{
-      //allocate the base size
-      extend_array->actual_array_sz += max_iter * 64 + SHA256_DIGEST_LENGTH;
-      extend_array->times_realloced++;
-
-      extend_array->array = malloc(extend_array->actual_array_sz); //if we have not allocated anything, malloc
-    }
-  }
-
-  //copy the data to be extended
-  memcpy(extend_array->array + used_array_sz, extend, extend_sz);
-
-  if(hashed_end)   
-    *(extend_array->array + used_array_sz + extend_sz) = 0; //add the final \000 of the whole string array
-
-  return;
-}
-
-uint64 mix_hashed_nums(uint8_t *hashed_nums, const uint8_t *unhashedData, size_t unhashed_sz,
-                       uint8_t **mixed_hash, uint8_t *hash_digest, int num_iter, bool *completed)
-{
-  uint32_t index = 0;
-  const uint32_t hashed_nums_len = SHA256_LEN;
-
-  uint64 count;
-  uint8_t tmp_val, tmp_array[SHA256_LEN + 2];
-
-  //initialize the class for the extend hash
-  Extend_Array new_hash;
-  Extend_Array_init(&new_hash);
-
-  //set the first hash length in the temp array to all 0xff
-  memset(tmp_array, 0xff, SHA256_LEN);
-  //set the last two bytes to \000
-  *(tmp_array + SHA256_LEN) = *(tmp_array + SHA256_LEN + 1) = 0;
-
-  for(count = 0; count < num_iter; count++)
-  {
-    //+1 to keeps a 0 value of *(hashed_nums + index) moving on
-    index += hex_char_to_int(*(hashed_nums + index));
-    
-    //if we hit the end of the hash, rehash it
-    if(index >= hashed_nums_len)
-    {
-      index = index & (hashed_nums_len - 1);
-      sha256_to_str(hashed_nums, hashed_nums_len, hashed_nums, hash_digest); //rescramble
-    }
-    
-    tmp_val = *(hashed_nums + index);
-
-    join_to_array(tmp_array, tmp_val); //plop tmp_val at the end of tmp_array
-    sha256_to_str(tmp_array, SHA256_LEN + 1, tmp_array, hash_digest);
-
-    //extend the expanded hash to the array
-    extend_array(&new_hash, count * SHA256_LEN, tmp_array, SHA256_LEN, false, num_iter);
-
-    //check if the last value of hashed_nums is the same as the last value in tmp_array
-    if(index == hashed_nums_len - 1 && tmp_val == *(tmp_array + SHA256_LEN - 1))
-	{
-      //add to count since we extended the array, but break will exit the for loop and count
-      // will not get incremenented by the for loop
-      count++;
-      break;
-	}
-  }
-  if (count == num_iter) *completed = false;
-  else *completed = true;
-  //extend the unhashed data to the end and add the \000 to the end
-  extend_array(&new_hash, count * SHA256_LEN, (u8int*)unhashedData, unhashed_sz, true, num_iter);
-
-  //assign the address of new_hash's array to mixed_hash
-  *mixed_hash = new_hash.array;
-
-  return count * SHA256_LEN + unhashed_sz;
-}
-
-u8int *dcrypt_buffer_alloc()
-{
-  return malloc(DCRYPT_DIGEST_LENGTH);
-}
-
-bool dcrypt(const uint8_t *data, size_t data_sz, uint8_t *hash_digest, u32int *hashRet, int num_iter)
-{
-  uint8_t hashed_nums[SHA256_LEN + 1], *mix_hash;
-
-  bool allocDigest = false;
-  bool completed = false;
-  if(!hash_digest)
-  {
-    hash_digest = alloca(DCRYPT_DIGEST_LENGTH);
-    allocDigest = true;
-  }
-
-  sha256_to_str(data, data_sz, hashed_nums, hash_digest);
-
-  //mix the hashes up, magority of the time takes here
-  uint64 mix_hash_len = mix_hashed_nums(hashed_nums, data, data_sz, &mix_hash, hash_digest, num_iter, &completed);
-
-  //apply the final hash to the output
-  if (completed)  sha256((const uint8_t*)mix_hash, mix_hash_len, hashRet);
-
-  free(mix_hash);
-
-  //sucess
-  return completed;
-}
-
-
-inline void digest_to_skiplist(unsigned char *d, unsigned char *str)
+void digest_to_skiplist(unsigned char *d, unsigned char *str)
 {
 	for (register int i = SHA256_DIGEST_LENGTH; i ; --i) {
         *str++ = (*d & 0xf0) >> 4;
@@ -393,6 +248,63 @@ inline void digest_to_skiplist(unsigned char *d, unsigned char *str)
 	*str = 0;
     return;
 }
+
+void printchar(unsigned char * data, int len)
+{
+	for(int i = 0; i < len; i++)
+    {
+		printf("%c",data[i]);
+	}
+	printf("\n");
+}
+
+void printhex(unsigned char * data, int len)
+{
+	for(int i = 0; i < len; i++)
+    {
+		printf("%02X",data[i]);
+	}
+	printf("\n");
+}
+
+void dcrypt(const uint8_t *data, size_t data_sz, uint8_t *hash_digest, u32int *hashRet)
+{
+	SHA256_CTX	ctx;   // sha256 context  
+
+	uint32_t    index = 0;
+	uint8_t     index_values[SHA256_LEN +1]; 
+	uint8_t     scratch_pad[SHA256_LEN +1];  
+
+	SHA256_Init(&ctx);	// initialize context which will progressively hash the result as data for it is generated in scratch_pad
+
+	sha256_to_str(data, data_sz, index_values,NULL);    // initialize index_values with sha256(data) -> ascii/hex
+	memset(scratch_pad, 0xff, SHA256_LEN);     // initialize scratchpad all 0xff 
+
+ 	do
+	{
+		index += hex_char_to_int(index_values[index]); // increment index by the value of the hex char in index_values and add 1 so index is always increasing
+
+		if(index >= SHA256_LEN) // if index is past index_values size, wrap index around and scramble index_values
+		{
+			index &= 0x3f;	// wrap index around
+			sha256_to_str(index_values, SHA256_LEN, index_values,NULL); //rescramble with sha256(index_values) -> ascii/hex
+		}
+
+		scratch_pad[SHA256_LEN] = index_values[index]; //set a byte in scratch_pad to index_values[index]
+		sha256_to_str(scratch_pad, SHA256_LEN + 1, scratch_pad,NULL); // sha256 hash 
+
+		SHA256_Update(&ctx,scratch_pad,SHA256_LEN); // write scratch_pad to the sha256 context that will generate the resulting dcrypt hash
+	}
+	while( (index != SHA256_LEN - 1) || (index_values[SHA256_LEN - 1] != scratch_pad[SHA256_LEN - 1] )); 
+	// loop ends when index is at "SHA256_HEX_LEN - 1" and the value of index_values matches the value of scratch_pad at that location
+	// this should have a 1 in 16 chance for every time index happens to hit "SHA256_HEX_LEN - 1" 
+
+	SHA256_Update(&ctx,  (u8int*)data,data_sz); // write the original data to the sha256 context for the resulting hash
+	SHA256_Final((u8int*)hashRet, &ctx);	// finalize the hash and store the result
+}
+
+
+
 
 bool dcrypt_fast(u8int *data, size_t data_sz,uint32_t*md)
 {
@@ -415,11 +327,14 @@ bool dcrypt_fast(u8int *data, size_t data_sz,uint32_t*md)
 	{
 		index_test += index_buffer[index_test]+1;
 
-		if(index_test >= SHA256_LEN) return 0;
-		if(index_test == SHA256_LEN - 1) break;
+		if(index_test >= SHA256_LEN-1) break;
+
 		steps++;
 	}
-	if(steps >= MAX_INC) return 0;/**/
+
+	//printf("steps = %d\n",steps);
+
+	if(steps >= MAX_INC || index_test != SHA256_LEN-1) return 0;/**/
 
 	memset(tmp_array, 0xff, SHA256_LEN);      //set the first hash length in the temp array to all 0xff'
 	memset(tmp_array + SHA256_LEN, 0x00, 2);  //set the last bytes to \000
@@ -491,11 +406,15 @@ bool dcrypt_fast(u8int *data, size_t data_sz,uint32_t*md)
 		tmp_array[SHA256_LEN] =  tmp_val; //set  end of tmp_array to tmp_val
 		sha256_to_str(tmp_array, SHA256_LEN + 1, tmp_array+SHA256_LEN,(u8int *)md);
 
+		//if(count == 3) {printf(">"); printhex(tmp_array+SHA256_LEN,32);};
+
 		count++;
 		tmp_array += SHA256_LEN;
 
 	}
 	while ((index != SHA256_LEN - 1) || (tmp_val != tmp_array[SHA256_LEN - 1] ));
+
+	//printhex(tmp_array,64);
 
 	SHA256_Update(&hash,hash_buffer+SHA256_LEN,SHA256_LEN*count);
 	SHA256_Update(&hash,data,data_sz);
@@ -567,15 +486,13 @@ int scanhash_dcrypt(int thr_id, uint32_t *pdata,
       *hashes_done = nNonce - pdata[19] + 1 - *hashes_skipped;
       pdata[19] = block[19];
 
-		char s[65];
-		digest_to_string((u8int*)hash, s);
-	    applog(LOG_INFO, "hash found: %s", s);
+	    applog(LOG_INFO, "CPU: hash found");
 
 		// check
 
 		uint32_t hash2[8];
 
-		int c2 = dcrypt((u8int*)block, 80, digest, hash2, num_iter);
+		dcrypt((u8int*)block, 80, digest, hash2);
 
 		for(int i = 0; i < 8 ; i++)
 		{
@@ -584,7 +501,7 @@ int scanhash_dcrypt(int thr_id, uint32_t *pdata,
 				char s1[65],s2[65];
 				digest_to_string((u8int*)hash, s1);
 				digest_to_string((u8int*)hash2, s2);
-				printf("Error invalid hash found.\n%s %d\n%s %d\n",s1,completed,s2,c2);
+				printf("Error invalid hash found.\n%s %d\n%s\n",s1,completed,s2);
 				exit(0);
 			}
 		}

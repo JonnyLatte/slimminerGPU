@@ -204,6 +204,9 @@ extern int timeval_subtract(struct timeval *result, struct timeval *x,
 extern bool fulltest(const uint32_t *hash, const uint32_t *target);
 extern void diff_to_target(uint32_t *target, double diff);
 
+extern int opt_depth;
+extern uint32_t opt_work_size;
+
 struct stratum_job {
 	char *job_id;
 	unsigned char prevhash[32];
